@@ -7,6 +7,29 @@ let priceUpdateInterval = null;
 let currentTradeStock = null;
 let currentTradeType = 'buy';
 
+// Admin-only console logging function
+function adminLog(...args) {
+    if (currentUser === 'admin') {
+        console.log('[ADMIN]', ...args);
+    }
+}
+
+// Get current UTC time as ISO string (prevents system time manipulation)
+function getCurrentUTCTime() {
+    const now = new Date();
+    // Use UTC time to prevent system time manipulation
+    const utcTime = Date.UTC(
+        now.getUTCFullYear(), 
+        now.getUTCMonth(), 
+        now.getUTCDate(), 
+        now.getUTCHours(), 
+        now.getUTCMinutes(), 
+        now.getUTCSeconds(),
+        now.getUTCMilliseconds()
+    );
+    return new Date(utcTime).toISOString();
+}
+
 // Use comprehensive NSE stock data from stocks-data.js
 const stocksData = typeof nseStocksData !== 'undefined' ? nseStocksData : [];
 
@@ -415,6 +438,7 @@ function generateDerivatives() {
 
 // Generate derivatives on load
 const derivativesData = generateDerivatives();
+adminLog(`📦 Generated ${derivativesData.length} derivatives (Futures + Options)`);
 
 // Initialize Market Data
 function initializeMarketData() {
@@ -429,11 +453,14 @@ function initializeMarketData() {
     if (savedMarketData && savedDate === today && dataVersion === CURRENT_VERSION) {
         try {
             marketData = JSON.parse(savedMarketData);
+            adminLog('✅ Loaded market data from localStorage (same day, version ' + CURRENT_VERSION + ')');
             return;
         } catch (error) {
-            // Silent fail
+            adminLog('❌ Failed to load saved market data:', error);
         }
     }
+    
+    adminLog('🔄 Regenerating market data (version ' + CURRENT_VERSION + ')...');
     
     // Otherwise, initialize fresh data
     stocksData.forEach(stock => {
@@ -463,6 +490,7 @@ function initializeMarketData() {
     
     // Save the initial data
     saveMarketData();
+    adminLog('✅ Market data initialized and saved');
 }
 
 // Save market data to localStorage
@@ -492,6 +520,8 @@ function register() {
     const password = document.getElementById('reg-password').value;
     const confirmPassword = document.getElementById('reg-confirm-password').value;
     const name = document.getElementById('reg-name').value.trim();
+    
+    adminLog('📝 Registration attempt:', { username, name });
     
     if (!username || !password || !name) {
         alert('Please fill in all fields');
@@ -528,6 +558,8 @@ function register() {
     };
     
     localStorage.setItem('tradingUsers', JSON.stringify(users));
+    adminLog('✅ User registered successfully:', username);
+    adminLog('👥 Total users:', Object.keys(users).length);
     
     // Clear form fields
     document.getElementById('reg-username').value = '';
@@ -546,6 +578,8 @@ function login() {
     const username = document.getElementById('login-username').value.trim();
     const password = document.getElementById('login-password').value;
     
+    adminLog('🔐 Login attempt for username:', username);
+    
     if (!username || !password) {
         alert('Please enter username and password');
         return;
@@ -553,6 +587,8 @@ function login() {
     
     // Reload users from localStorage to ensure we have the latest data
     users = JSON.parse(localStorage.getItem('tradingUsers')) || {};
+    
+    adminLog('📊 Available users:', Object.keys(users));
     
     if (!users[username]) {
         alert(`Username "${username}" not found. Please register first or check your username.`);
@@ -566,6 +602,7 @@ function login() {
     
     currentUser = username;
     localStorage.setItem('currentUser', username);
+    adminLog('✅ Login successful for:', username);
     showDashboard();
 }
 
@@ -588,6 +625,8 @@ function logout() {
 }
 
 function showDashboard() {
+    adminLog('🎯 Showing dashboard for:', currentUser);
+    
     const authScreen = document.getElementById('auth-screen');
     const dashboardScreen = document.getElementById('dashboard-screen');
     
@@ -610,6 +649,8 @@ function showDashboard() {
     renderOrders();
     renderTransactions();
     startPriceUpdates();
+    
+    adminLog('✅ Dashboard loaded successfully');
 }
 
 // Navigation Functions
@@ -1104,6 +1145,8 @@ function renderOrders() {
 function addFunds() {
     const amount = parseFloat(document.getElementById('add-amount').value);
     
+    adminLog('💵 Add funds request:', amount);
+    
     if (!amount || amount < 100) {
         alert('Please enter a valid amount (minimum ₹100)');
         return;
@@ -1112,11 +1155,13 @@ function addFunds() {
     const user = users[currentUser];
     user.balance += amount;
     
+    adminLog('✅ Funds added successfully. New balance:', user.balance);
+    
     user.transactions.push({
         type: 'credit',
         amount: amount,
         description: 'Funds Added',
-        timestamp: new Date().toISOString()
+        timestamp: getCurrentUTCTime()
     });
     
     saveUserData();
@@ -1131,23 +1176,28 @@ function withdrawFunds() {
     const amount = parseFloat(document.getElementById('withdraw-amount').value);
     const user = users[currentUser];
     
+    adminLog('💸 Withdraw funds request:', amount);
+    
     if (!amount || amount < 100) {
         alert('Please enter a valid amount (minimum ₹100)');
         return;
     }
     
     if (amount > user.balance) {
+        adminLog('❌ Insufficient balance for withdrawal');
         alert('Insufficient balance');
         return;
     }
     
     user.balance -= amount;
     
+    adminLog('✅ Funds withdrawn successfully. New balance:', user.balance);
+    
     user.transactions.push({
         type: 'debit',
         amount: amount,
         description: 'Funds Withdrawn',
-        timestamp: new Date().toISOString()
+        timestamp: getCurrentUTCTime()
     });
     
     saveUserData();
@@ -1202,6 +1252,8 @@ function openTradeModal(symbol, type = 'buy') {
     const user = users[currentUser];
     const isDerivative = stock.type && (stock.type.includes('Option') || stock.type === 'Future');
     const lotSize = stock.lotSize || 1;
+    
+    adminLog('📊 Opening trade modal:', { symbol, type, isDerivative, lotSize, currentPrice: stock.currentPrice });
     
     // Update modal title with lot info for derivatives
     let modalTitle = stock.name;
@@ -1350,6 +1402,16 @@ function executeTrade() {
     const quantity = isDerivative ? lotsOrQuantity * lotSize : lotsOrQuantity;
     const total = quantity * price;
     
+    adminLog('💰 Trade Execution:', {
+        symbol: currentTradeStock,
+        type: currentTradeType,
+        quantity: quantity,
+        price: price,
+        total: total,
+        isDerivative: isDerivative,
+        lotSize: lotSize
+    });
+    
     if (!quantity || quantity < 1) {
         alert('Please enter a valid quantity');
         return;
@@ -1407,7 +1469,7 @@ function executeTrade() {
                 // Now create new long position with remaining quantity
                 holding.quantity = newQuantity;
                 holding.avgPrice = price;
-                holding.purchaseTime = new Date().toISOString();
+                holding.purchaseTime = getCurrentUTCTime();
                 
                 const pnlMessage = realizedPnLForTrade >= 0 
                     ? `Profit: ₹${realizedPnLForTrade.toFixed(2)}` 
@@ -1426,7 +1488,7 @@ function executeTrade() {
             user.portfolio[currentTradeStock] = {
                 quantity: quantity,
                 avgPrice: price,
-                purchaseTime: new Date().toISOString()
+                purchaseTime: getCurrentUTCTime()
             };
             
             const contractOrShares = isDerivative ? 'contracts' : 'shares';
@@ -1494,7 +1556,7 @@ function executeTrade() {
                     user.portfolio[currentTradeStock] = {
                         quantity: -quantity, // Negative = short position
                         avgPrice: price,
-                        purchaseTime: new Date().toISOString()
+                        purchaseTime: getCurrentUTCTime()
                     };
                     
                     alert(`Successfully wrote (sold) ${quantity} ${stockData.type} contracts\nPremium received: ₹${total.toFixed(2)}\n\nNote: This is a short position. You'll profit if the option price decreases.`);
@@ -1535,7 +1597,7 @@ function executeTrade() {
         price: price,
         total: total,
         orderType: orderType,
-        timestamp: new Date().toISOString()
+        timestamp: getCurrentUTCTime()
     });
     
     saveUserData();
@@ -1548,56 +1610,217 @@ function executeTrade() {
 }
 
 // Market Hours & Holiday Calendar
+// Source: https://www.nseindia.com/resources/exchange-communication-holidays
+// Last Updated: March 19, 2026
+// NOTE: This list should be updated annually from NSE official website
+
 const MARKET_HOLIDAYS_2026 = [
+    '2026-01-15', // Municipal Corporation Election - Maharashtra
     '2026-01-26', // Republic Day
-    '2026-03-14', // Holi
-    '2026-03-30', // Ram Navami
-    '2026-04-02', // Mahavir Jayanti
-    '2026-04-10', // Good Friday
+    '2026-03-03', // Holi
+    '2026-03-26', // Shri Ram Navami
+    '2026-03-31', // Shri Mahavir Jayanti
+    '2026-04-03', // Good Friday
+    '2026-04-14', // Dr. Baba Saheb Ambedkar Jayanti
     '2026-05-01', // Maharashtra Day
-    '2026-08-15', // Independence Day
-    '2026-08-19', // Janmashtami
-    '2026-10-02', // Gandhi Jayanti
-    '2026-10-24', // Dussehra
-    '2026-11-13', // Diwali
-    '2026-11-14', // Diwali (Balipratipada)
-    '2026-11-30', // Guru Nanak Jayanti
+    '2026-05-28', // Bakri Id
+    '2026-06-26', // Muharram
+    '2026-09-14', // Ganesh Chaturthi
+    '2026-10-02', // Mahatma Gandhi Jayanti
+    '2026-10-20', // Dussehra
+    '2026-11-08', // Diwali Laxmi Pujan (Muhurat Trading will be conducted)
+    '2026-11-10', // Diwali-Balipratipada
+    '2026-11-24', // Prakash Gurpurb Sri Guru Nanak Dev
     '2026-12-25'  // Christmas
 ];
 
+// Special Note: November 08, 2026 is Diwali Laxmi Pujan
+// Muhurat Trading will be conducted on this day (timings to be notified)
+// For this simulator, we treat it as a regular holiday
+
+// TODO: Implement dynamic holiday fetching from NSE
+// For production: Fetch from https://www.nseindia.com/api/holiday-master
+// This would require a backend service to handle CORS and caching
+
 function isMarketOpen() {
+    // Use UTC time to prevent system time manipulation
     const now = new Date();
-    const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
+    
+    // Get current UTC time components
+    const utcHours = now.getUTCHours();
+    const utcMinutes = now.getUTCMinutes();
+    
+    // Convert to IST by adding 5 hours 30 minutes
+    let istHours = utcHours + 5;
+    let istMinutes = utcMinutes + 30;
+    
+    // Handle minute overflow
+    if (istMinutes >= 60) {
+        istMinutes -= 60;
+        istHours += 1;
+    }
+    
+    // Handle hour overflow (next day)
+    let istDay = now.getUTCDate();
+    let istMonth = now.getUTCMonth();
+    let istYear = now.getUTCFullYear();
+    
+    if (istHours >= 24) {
+        istHours -= 24;
+        istDay += 1;
+        // Note: Not handling month/year overflow for simplicity, as it's rare
+    }
+    
+    // Create IST date for day checking
+    const istTime = new Date(Date.UTC(istYear, istMonth, istDay, istHours, istMinutes));
     
     // Check if weekend (Saturday = 6, Sunday = 0)
     const day = istTime.getDay();
     if (day === 0 || day === 6) {
-        return { open: false, reason: 'Weekend - Market Closed' };
+        const nextOpenDay = getNextMarketOpenDay(istTime);
+        return { open: false, reason: `Weekend - Market opens ${nextOpenDay}` };
     }
     
     // Check if holiday
     const dateStr = istTime.toISOString().split('T')[0];
     if (MARKET_HOLIDAYS_2026.includes(dateStr)) {
-        return { open: false, reason: 'Market Holiday' };
+        const nextOpenDay = getNextMarketOpenDay(istTime);
+        return { open: false, reason: `Market Holiday - Opens ${nextOpenDay}` };
     }
     
-    // Check market hours (9:15 AM to 3:30 PM IST)
-    const hours = istTime.getHours();
-    const minutes = istTime.getMinutes();
-    const timeInMinutes = hours * 60 + minutes;
+    // Check market hours (IST)
+    // Pre-open: 9:00 AM - 9:15 AM (with phases)
+    // Regular: 9:15 AM - 3:30 PM
+    const timeInMinutes = istHours * 60 + istMinutes;
     
-    const marketOpen = 9 * 60 + 15;  // 9:15 AM
+    adminLog('🕐 isMarketOpen time check:', {
+        utcTime: `${utcHours}:${utcMinutes}`,
+        istTime: `${istHours}:${istMinutes}`,
+        istDate: `${istYear}-${istMonth + 1}-${istDay}`,
+        timeInMinutes: timeInMinutes,
+        preOpenStart: 9 * 60,
+        preOpenPhase1End: 9 * 60 + 8,
+        marketOpen: 9 * 60 + 15,
+        marketClose: 15 * 60 + 30
+    });
+    
+    const preOpenStart = 9 * 60;      // 9:00 AM
+    const preOpenPhase1End = 9 * 60 + 8; // 9:08 AM
+    const marketOpen = 9 * 60 + 15;   // 9:15 AM
     const marketClose = 15 * 60 + 30; // 3:30 PM
     
-    if (timeInMinutes < marketOpen) {
-        return { open: false, reason: 'Pre-Market - Opens at 9:15 AM' };
+    if (timeInMinutes < preOpenStart) {
+        // Before pre-open session
+        return { open: false, reason: 'Pre-Market - Opens today at 9:00 AM' };
     }
     
-    if (timeInMinutes > marketClose) {
-        return { open: false, reason: 'Market Closed - Opens tomorrow at 9:15 AM' };
+    if (timeInMinutes >= preOpenStart && timeInMinutes < preOpenPhase1End) {
+        // Pre-open session (9:00 AM - 9:08 AM) - Order collection phase
+        return { open: true, reason: 'Pre-Open Session (Order Collection)' };
     }
     
-    return { open: true, reason: 'Market Open' };
+    if (timeInMinutes >= preOpenPhase1End && timeInMinutes < marketOpen) {
+        // Pre-open equilibrium phase (9:08 AM - 9:15 AM)
+        return { open: false, reason: 'Pre-Open - Market opens today at 9:15 AM' };
+    }
+    
+    if (timeInMinutes >= marketOpen && timeInMinutes < marketClose) {
+        // Regular trading hours
+        return { open: true, reason: 'Market Open' };
+    }
+    
+    if (timeInMinutes >= marketClose) {
+        // After market closes
+        const nextOpenDay = getNextMarketOpenDay(istTime, istHours, istMinutes);
+        return { open: false, reason: `Market Closed - Opens ${nextOpenDay} at 9:00 AM` };
+    }
+    
+    return { open: false, reason: 'Market Closed' };
+}
+
+function getNextMarketOpenDay(currentDate, istHours, istMinutes) {
+    const date = new Date(currentDate);
+    const daysOfWeek = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    
+    const currentTimeInMinutes = istHours * 60 + istMinutes;
+    const marketOpenTime = 9 * 60 + 15; // 9:15 AM
+    
+    adminLog('🕐 getNextMarketOpenDay DEBUG:', {
+        istTime: `${istHours}:${istMinutes}`,
+        currentTimeInMinutes: currentTimeInMinutes,
+        marketOpenTime: marketOpenTime,
+        comparison: `${currentTimeInMinutes} < ${marketOpenTime} = ${currentTimeInMinutes < marketOpenTime}`
+    });
+    
+    // If it's after midnight (12 AM) but before market open (9:15 AM), 
+    // check today first, otherwise check from tomorrow
+    let checkFromToday = currentTimeInMinutes < marketOpenTime;
+    
+    adminLog('🔍 checkFromToday:', checkFromToday);
+    
+    // If checking from today, don't increment date yet
+    if (!checkFromToday) {
+        date.setUTCDate(date.getUTCDate() + 1);
+        adminLog('📅 Incremented to tomorrow:', date.toISOString().split('T')[0]);
+    } else {
+        adminLog('📅 Checking today:', date.toISOString().split('T')[0]);
+    }
+    
+    // Check up to 10 days ahead (to handle long holiday periods)
+    for (let i = 0; i < 10; i++) {
+        const dayOfWeek = date.getUTCDay();
+        const dateStr = date.toISOString().split('T')[0];
+        
+        adminLog(`🔍 Checking date: ${dateStr}, day: ${daysOfWeek[dayOfWeek]}`);
+        
+        // Skip weekends
+        if (dayOfWeek === 0 || dayOfWeek === 6) {
+            adminLog(`⏭️ Skipping weekend: ${daysOfWeek[dayOfWeek]}`);
+            date.setUTCDate(date.getUTCDate() + 1);
+            continue;
+        }
+        
+        // Skip holidays
+        if (MARKET_HOLIDAYS_2026.includes(dateStr)) {
+            adminLog(`⏭️ Skipping holiday: ${dateStr}`);
+            date.setUTCDate(date.getUTCDate() + 1);
+            continue;
+        }
+        
+        // Found next market open day
+        adminLog(`✅ Found market open day: ${dateStr}`);
+        
+        // Compare dates properly using ISO strings
+        const currentDateStr = currentDate.toISOString().split('T')[0];
+        const tomorrowDate = new Date(currentDate);
+        tomorrowDate.setUTCDate(tomorrowDate.getUTCDate() + 1);
+        const tomorrowDateStr = tomorrowDate.toISOString().split('T')[0];
+        
+        adminLog(`📅 Comparison: current=${currentDateStr}, found=${dateStr}, tomorrow=${tomorrowDateStr}`);
+        
+        // Check if it's today (after midnight but before market open)
+        if (dateStr === currentDateStr) {
+            adminLog(`✅ Returning: today`);
+            return 'today';
+        }
+        
+        // Check if it's tomorrow
+        if (dateStr === tomorrowDateStr) {
+            adminLog(`✅ Returning: tomorrow`);
+            return 'tomorrow';
+        }
+        
+        // Check if it's within this week
+        const daysUntil = Math.floor((date - today) / (1000 * 60 * 60 * 24));
+        if (daysUntil <= 7) {
+            return `on ${daysOfWeek[dayOfWeek]}`;
+        }
+        
+        // Otherwise show the date
+        return `on ${date.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' })}`;
+    }
+    
+    return 'soon';
 }
 
 function showMarketStatus() {
@@ -1838,6 +2061,8 @@ let simulationStarted = false;
 async function startPriceUpdates() {
     if (priceUpdateInterval) return;
     
+    adminLog('🚀 Starting price updates...');
+    
     // Initialize sentiment immediately
     initializeSectorSentiment();
     
@@ -1850,13 +2075,20 @@ async function startPriceUpdates() {
     
     // Try to fetch real prices immediately if market is open
     const marketStatus = isMarketOpen();
+    adminLog('📊 Market Status:', marketStatus);
+    
     if (marketStatus.open) {
+        adminLog('🔄 Market is open - Fetching real prices...');
         fetchRealPricesAndInitialize();
+    } else {
+        adminLog('⏸️ Market is closed - Using simulation');
     }
     
     priceUpdateInterval = setInterval(() => {
         const marketStatus = isMarketOpen();
         showMarketStatus();
+        
+        adminLog('🔄 Price update cycle:', { marketOpen: marketStatus.open, reason: marketStatus.reason });
         
         // Check if we need to fetch real prices (only if market is actually open)
         if (marketStatus.open) {
@@ -1864,11 +2096,13 @@ async function startPriceUpdates() {
             const timeSinceLastUpdate = lastPriceUpdate ? now - lastPriceUpdate : PRICE_UPDATE_INTERVAL + 1;
             
             if (timeSinceLastUpdate > PRICE_UPDATE_INTERVAL) {
+                adminLog('⏰ Time to fetch real prices');
                 fetchRealPricesAndInitialize();
             }
         }
         
         // ALWAYS run simulation
+        adminLog('🎲 Running price simulation...');
         updatePrices();
         
         // Always update UI
@@ -1885,11 +2119,15 @@ async function startPriceUpdates() {
 
 async function fetchRealPricesAndInitialize() {
     try {
+        adminLog('📡 Fetching real-time prices from API...');
+        
         // Get all unique symbols from watchlist and portfolio
         const user = users[currentUser];
         const watchlistSymbols = user.watchlist ? user.watchlist.stocks : [];
         const portfolioSymbols = Object.keys(user.portfolio);
         const allSymbols = [...new Set([...watchlistSymbols, ...portfolioSymbols])];
+        
+        adminLog('📋 Symbols to fetch:', allSymbols);
         
         // Fetch prices in batches
         const batchSize = 10;
@@ -1911,6 +2149,8 @@ async function fetchRealPricesAndInitialize() {
             realPricesLoaded = true;
             lastPriceUpdate = new Date();
             
+            adminLog('✅ Successfully fetched real prices for', successCount, 'batches');
+            
             // Initialize sentiment based on real market data
             initializeSentimentFromRealData();
             
@@ -1928,6 +2168,8 @@ async function fetchRealPricesAndInitialize() {
             if (document.getElementById('dashboard-section').classList.contains('active')) {
                 renderDashboard();
             }
+            
+            adminLog('🎨 UI updated with real prices');
         } else {
             throw new Error('Failed to fetch any real prices');
         }
@@ -1935,6 +2177,8 @@ async function fetchRealPricesAndInitialize() {
         updateDataSourceIndicator();
         
     } catch (error) {
+        adminLog('❌ Error fetching real prices:', error.message);
+        adminLog('🔄 Falling back to simulation mode');
         isUsingLiveData = false;
         realPricesLoaded = true; // Allow simulation to start
         initializeSectorSentiment(); // Use random sentiment
@@ -2060,7 +2304,7 @@ function initializeSentimentFromRealData() {
     });
     
     lastSentimentUpdate = Date.now();
-    console.log('📊 Sector sentiment initialized:', sectorSentiment);
+    adminLog('📊 Sector sentiment initialized from real data:', sectorSentiment);
 }
 
 function stopPriceUpdates() {
@@ -2084,6 +2328,8 @@ function initializeSectorSentiment() {
             lastUpdate: Date.now()
         };
     });
+    
+    adminLog('🎲 Sector sentiment initialized (random):', sectorSentiment);
 }
 
 function updateSectorSentiment() {
@@ -2108,10 +2354,16 @@ function updateSectorSentiment() {
 }
 
 function updatePrices() {
+    // Use UTC time to prevent system time manipulation
     const now = new Date();
-    const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const hours = istTime.getHours();
-    const minutes = istTime.getMinutes();
+    const utcTime = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 
+                             now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds());
+    
+    // Convert UTC to IST (UTC + 5:30)
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(utcTime + istOffset);
+    const hours = istTime.getUTCHours();
+    const minutes = istTime.getUTCMinutes();
     
     // Update sector sentiment periodically (but smoothly)
     updateSectorSentiment();
@@ -2225,10 +2477,16 @@ function updateOptionsPrices() {
 
 // Reset prices at market open (9:15 AM)
 function checkMarketOpen() {
+    // Use UTC time to prevent system time manipulation
     const now = new Date();
-    const istTime = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' }));
-    const hours = istTime.getHours();
-    const minutes = istTime.getMinutes();
+    const utcTime = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 
+                             now.getUTCHours(), now.getUTCMinutes(), now.getUTCSeconds());
+    
+    // Convert UTC to IST (UTC + 5:30)
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istTime = new Date(utcTime + istOffset);
+    const hours = istTime.getUTCHours();
+    const minutes = istTime.getUTCMinutes();
     
     // If it's 9:15 AM, reset previous close to current price
     if (hours === 9 && minutes === 15) {
@@ -2267,9 +2525,10 @@ function ensureAdminUser() {
                 stocks: ['RELIANCE', 'TCS', 'HDFCBANK', 'INFY', 'ICICIBANK'],
                 derivatives: ['NIFTY50-FUT', 'BANKNIFTY-FUT']
             },
-            createdAt: new Date().toISOString()
+            createdAt: getCurrentUTCTime()
         };
         localStorage.setItem('tradingUsers', JSON.stringify(users));
+        console.log('✅ Admin user created automatically');
     }
 }
 
