@@ -2211,6 +2211,16 @@ async function fetchRealPricesAndInitialize() {
     
     isFetchingPrices = true;
     
+    // Set timeout to reset flag if fetch takes too long (30 seconds)
+    const fetchTimeout = setTimeout(() => {
+        if (isFetchingPrices) {
+            adminLog('⏰ API fetch timeout (30s) - resetting flag');
+            isFetchingPrices = false;
+            isUsingLiveData = false;
+            updateDataSourceIndicator();
+        }
+    }, 30000);
+    
     try {
         adminLog('📡 Fetching real-time prices from API...');
         
@@ -2289,6 +2299,7 @@ async function fetchRealPricesAndInitialize() {
         initializeSectorSentiment(); // Use random sentiment
         updateDataSourceIndicator();
     } finally {
+        clearTimeout(fetchTimeout);
         isFetchingPrices = false;
     }
 }
