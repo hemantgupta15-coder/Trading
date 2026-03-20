@@ -15,7 +15,7 @@
 const NSE_INDIA_CONFIG = {
     enabled: true,
     apiKey: null, // No API key needed
-    endpoint: 'http://localhost:3001', // ← CHANGE THIS to your Render URL for production
+    endpoint: 'https://trading-proxy-dc80.onrender.com', // Production Render URL
     
     async fetchPrice(symbol) {
         try {
