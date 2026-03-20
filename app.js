@@ -749,11 +749,27 @@ function calculateDayPnL() {
     const user = users[currentUser];
     let dayPnL = 0;
     
+    const today = new Date().toDateString();
+    
     for (const symbol in user.portfolio) {
         const holding = user.portfolio[symbol];
         const currentPrice = marketData[symbol].currentPrice;
         const previousClose = marketData[symbol].previousClose;
-        dayPnL += holding.quantity * (currentPrice - previousClose);
+        
+        // Check if position was opened today
+        const purchaseDate = holding.purchaseTime ? new Date(holding.purchaseTime).toDateString() : null;
+        const isOpenedToday = purchaseDate === today;
+        
+        if (isOpenedToday) {
+            // For positions opened today, Day P&L = current P&L (from purchase price)
+            // This is because there's no "previous close" for today's positions
+            const invested = holding.quantity * holding.avgPrice;
+            const current = holding.quantity * currentPrice;
+            dayPnL += (current - invested);
+        } else {
+            // For positions held from previous days, use previous close
+            dayPnL += holding.quantity * (currentPrice - previousClose);
+        }
     }
     
     return dayPnL;
@@ -872,10 +888,31 @@ function renderDerivativesList() {
         const changeClass = data.change >= 0 ? 'positive' : 'negative';
         const changeSymbol = data.change >= 0 ? '+' : '';
         
+        // Format expiry as MON YYYY
+        let expiryLabel = '';
+        if (data.expiry) {
+            const expDate = new Date(data.expiry);
+            const month = expDate.toLocaleString('en-IN', { month: 'short' }).toUpperCase();
+            const year = expDate.getFullYear();
+            expiryLabel = `${month} ${year}`;
+        }
+        
+        // For options: show "SYMBOL STRIKE CE/PE EXPIRY"
+        // For futures: show "SYMBOL FUT EXPIRY"
+        let symbolLine = '';
+        if (data.type === 'Call Option' || data.type === 'Put Option') {
+            const cp = data.type === 'Call Option' ? 'CE' : 'PE';
+            symbolLine = `${data.underlying} ${data.strike} ${cp}${expiryLabel ? ' ' + expiryLabel : ''}`;
+        } else if (data.type === 'Future') {
+            symbolLine = `${data.symbol} FUT${expiryLabel ? ' ' + expiryLabel : ''}`;
+        } else {
+            symbolLine = `${data.symbol} ${data.type || ''}`.trim();
+        }
+        
         item.innerHTML = `
             <div>
                 <div class="stock-name">${data.name}</div>
-                <div class="stock-symbol">${data.symbol} ${data.type}</div>
+                <div class="stock-symbol">${symbolLine}</div>
             </div>
             <div class="stock-price">₹${data.currentPrice.toFixed(2)}</div>
             <div class="stock-change ${changeClass}">
@@ -1811,7 +1848,8 @@ function getNextMarketOpenDay(currentDate, istHours, istMinutes) {
         }
         
         // Check if it's within this week
-        const daysUntil = Math.floor((date - today) / (1000 * 60 * 60 * 24));
+        const now = new Date();
+        const daysUntil = Math.floor((date - now) / (1000 * 60 * 60 * 24));
         if (daysUntil <= 7) {
             return `on ${daysOfWeek[dayOfWeek]}`;
         }
@@ -1913,8 +1951,13 @@ function toggleTestMode() {
 // Real-time Price Fetching
 let lastPriceUpdate = null;
 let isUsingLiveData = false;
-const PRICE_UPDATE_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const TEST_MODE_INTERVAL = 1 * 1000; // 1 second (test mode - admin only)
+const MARKET_HOURS_INTERVAL = 2 * 1000; // 2 seconds during market hours (normal mode)
+const MARKET_CLOSED_INTERVAL = 60 * 1000; // 60 seconds when market is closed
 let testMode = false; // Test mode to bypass market hours
+let isFetchingPrices = false; // Prevent multiple simultaneous fetches
+let rateLimitHitTime = null; // Track when we hit rate limit
+const RATE_LIMIT_COOLDOWN = 60 * 1000; // Wait 60 seconds after hitting rate limit
 
 async function fetchRealPrices() {
     try {
@@ -2088,24 +2131,49 @@ async function startPriceUpdates() {
         const marketStatus = isMarketOpen();
         showMarketStatus();
         
-        adminLog('🔄 Price update cycle:', { marketOpen: marketStatus.open, reason: marketStatus.reason });
+        const now = new Date();
+        const timeSinceLastUpdate = lastPriceUpdate ? now - lastPriceUpdate : Infinity;
         
-        // Check if we need to fetch real prices (only if market is actually open)
-        if (marketStatus.open) {
-            const now = new Date();
-            const timeSinceLastUpdate = lastPriceUpdate ? now - lastPriceUpdate : PRICE_UPDATE_INTERVAL + 1;
-            
-            if (timeSinceLastUpdate > PRICE_UPDATE_INTERVAL) {
-                adminLog('⏰ Time to fetch real prices');
-                fetchRealPricesAndInitialize();
-            }
+        adminLog('=== Price Update Cycle ===');
+        adminLog('Market Status:', marketStatus);
+        adminLog('Test Mode:', testMode);
+        adminLog('Time since last API fetch:', Math.floor(timeSinceLastUpdate / 1000), 'seconds');
+        
+        // Determine effective interval based on mode and market status
+        // In test mode: fetch every 1 second regardless of market hours
+        // In normal mode: 
+        //   - if market open: fetch every 2 seconds
+        //   - if market closed: fetch every 60 seconds
+        let effectiveInterval;
+        if (testMode) {
+            effectiveInterval = TEST_MODE_INTERVAL; // 1s (admin only)
+        } else if (marketStatus.open) {
+            effectiveInterval = MARKET_HOURS_INTERVAL; // 2s when market open
+        } else {
+            effectiveInterval = MARKET_CLOSED_INTERVAL; // 60s when market closed
         }
         
-        // ALWAYS run simulation
-        adminLog('🎲 Running price simulation...');
-        updatePrices();
+        adminLog('Effective interval:', effectiveInterval / 1000, 'seconds');
+        adminLog('Next API fetch in:', Math.floor((effectiveInterval - timeSinceLastUpdate) / 1000), 'seconds');
+        
+        const shouldFetch = timeSinceLastUpdate > effectiveInterval;
+        
+        if (shouldFetch) {
+            adminLog('⏰ Time to fetch real prices from API!');
+            adminLog('📡 Fetching for all stocks in watchlist, holdings, and positions...');
+            fetchRealPricesAndInitialize();
+        }
+        
+        // If we have real data, do NOT run simulation (use actual NSE prices)
+        if (!isUsingLiveData) {
+            adminLog('🎲 Running sentiment-based simulation (no real data yet)...');
+            updatePrices();
+        } else {
+            adminLog('📡 Using live NSE data (simulation disabled)');
+        }
         
         // Always update UI
+        adminLog('🎨 Updating UI...');
         renderStocksList();
         renderDerivativesList();
         updateAccountSummary();
@@ -2114,33 +2182,70 @@ async function startPriceUpdates() {
         renderHoldings();
         renderPositions();
         renderDashboard();
+        
+        adminLog('✅ Update cycle complete!');
+        adminLog(''); // Empty line for readability
     }, 3000); // Update every 3 seconds
 }
 
 async function fetchRealPricesAndInitialize() {
+    // Prevent multiple simultaneous fetches
+    if (isFetchingPrices) {
+        adminLog('⏸️ Already fetching prices, skipping this cycle');
+        return;
+    }
+    
+    // Check if we're in rate limit cooldown
+    if (rateLimitHitTime) {
+        const timeSinceLimitHit = Date.now() - rateLimitHitTime;
+        if (timeSinceLimitHit < RATE_LIMIT_COOLDOWN) {
+            const remainingCooldown = Math.ceil((RATE_LIMIT_COOLDOWN - timeSinceLimitHit) / 1000);
+            adminLog(`⏳ Rate limit cooldown: ${remainingCooldown}s remaining`);
+            return;
+        } else {
+            // Cooldown expired, reset
+            rateLimitHitTime = null;
+            adminLog('✅ Rate limit cooldown expired, resuming API calls');
+        }
+    }
+    
+    isFetchingPrices = true;
+    
     try {
         adminLog('📡 Fetching real-time prices from API...');
         
-        // Get all unique symbols from watchlist and portfolio
+        // Build full symbol list: watchlist stocks + derivatives + portfolio (stocks & derivatives)
         const user = users[currentUser];
-        const watchlistSymbols = user.watchlist ? user.watchlist.stocks : [];
-        const portfolioSymbols = Object.keys(user.portfolio);
-        const allSymbols = [...new Set([...watchlistSymbols, ...portfolioSymbols])];
+        const watchlistStocks = (user.watchlist && user.watchlist.stocks) ? user.watchlist.stocks : [];
+        const watchlistDerivatives = (user.watchlist && user.watchlist.derivatives) ? user.watchlist.derivatives : [];
+        const portfolioSymbols = Object.keys(user.portfolio || {});
         
-        adminLog('📋 Symbols to fetch:', allSymbols);
+        // Underlying equities from derivatives (e.g. NIFTY50-FUT -> NIFTY50) are NOT on NSE equity API,
+        // so for now we only fetch for actual equity symbols that exist in marketData with no 'underlying'.
+        const equitySymbols = new Set();
         
-        // Fetch prices in batches
-        const batchSize = 10;
+        watchlistStocks.forEach(s => {
+            if (marketData[s] && !marketData[s].underlying) {
+                equitySymbols.add(s);
+            }
+        });
+        portfolioSymbols.forEach(s => {
+            if (marketData[s] && !marketData[s].underlying) {
+                equitySymbols.add(s);
+            }
+        });
+        
+        const allEquitySymbols = Array.from(equitySymbols);
+        adminLog('📋 NSE symbols to fetch (equities only):', allEquitySymbols);
+        
+        // Fetch ALL equities each cycle (no external rate limit now)
         let successCount = 0;
         
-        for (let i = 0; i < allSymbols.length; i += batchSize) {
-            const batch = allSymbols.slice(i, i + batchSize).map(s => s + '.NS');
-            const success = await fetchBatchPricesAndSetSentiment(batch);
-            if (success) successCount++;
-            
-            // Small delay between batches
-            if (i + batchSize < allSymbols.length) {
-                await new Promise(resolve => setTimeout(resolve, 1000));
+        for (let i = 0; i < allEquitySymbols.length; i++) {
+            const symbol = allEquitySymbols[i];
+            const success = await fetchBatchPricesAndSetSentiment([symbol + '.NS']);
+            if (success) {
+                successCount++;
             }
         }
         
@@ -2149,7 +2254,7 @@ async function fetchRealPricesAndInitialize() {
             realPricesLoaded = true;
             lastPriceUpdate = new Date();
             
-            adminLog('✅ Successfully fetched real prices for', successCount, 'batches');
+            adminLog(`✅ Successfully fetched real prices for ${successCount}/${allEquitySymbols.length} stocks`);
             
             // Initialize sentiment based on real market data
             initializeSentimentFromRealData();
@@ -2170,7 +2275,7 @@ async function fetchRealPricesAndInitialize() {
             }
             
             adminLog('🎨 UI updated with real prices');
-        } else {
+        } else if (!hitRateLimit) {
             throw new Error('Failed to fetch any real prices');
         }
         
@@ -2183,93 +2288,113 @@ async function fetchRealPricesAndInitialize() {
         realPricesLoaded = true; // Allow simulation to start
         initializeSectorSentiment(); // Use random sentiment
         updateDataSourceIndicator();
+    } finally {
+        isFetchingPrices = false;
     }
 }
 
 async function fetchBatchPricesAndSetSentiment(symbols) {
-    const ALPHA_VANTAGE_API_KEY = 'IBR2ZOARKOZ1O8XZ';
+    // Use the API configuration from api-config.js
+    const activeAPI = typeof API_CONFIG !== 'undefined' ? API_CONFIG : null;
     
-    addAPIDebugLog(`Fetching batch: ${symbols.map(s => s.replace('.NS', '')).join(', ')}`);
-    addAPIDebugLog('Using Alpha Vantage API (no CORS issues!)');
+    if (!activeAPI) {
+        addAPIDebugLog('❌ No API configuration found. Using simulation.', 'error');
+        addAPIDebugLog('💡 Make sure api-config.js is loaded before app.js', 'error');
+        return false;
+    }
+    
+    const apiName = 'NSE India via Local Proxy';
+    
+    addAPIDebugLog(`📡 Fetching batch: ${symbols.map(s => s.replace('.NS', '')).join(', ')}`);
+    addAPIDebugLog(`🔌 Using ${apiName}`);
+    addAPIDebugLog(`🌐 Endpoint: ${activeAPI.endpoint}`);
     
     let pricesUpdated = 0;
     
-    // Alpha Vantage allows 5 requests per minute, 25 per day
-    // Fetch one stock at a time with delay
+    // Fetch one stock at a time
     for (let i = 0; i < symbols.length; i++) {
         const symbol = symbols[i].replace('.NS', '');
         
         try {
-            // Alpha Vantage Global Quote endpoint
-            const url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}.BSE&apikey=${ALPHA_VANTAGE_API_KEY}`;
+            addAPIDebugLog(`📊 [${i + 1}/${symbols.length}] Fetching ${symbol} from ${apiName}...`);
             
-            addAPIDebugLog(`Fetching ${symbol} from Alpha Vantage...`);
+            // Use the API's fetchPrice method (NSE proxy)
+            const priceData = await activeAPI.fetchPrice(symbol);
             
-            const response = await fetch(url);
-            
-            if (!response.ok) {
-                addAPIDebugLog(`HTTP ${response.status} for ${symbol}`, 'error');
+            if (!priceData) {
+                addAPIDebugLog(`❌ No data returned for ${symbol}`, 'error');
                 continue;
             }
             
-            const data = await response.json();
+            // Detailed console log to verify raw values
+            adminLog(`📈 NSE RAW for ${symbol}:`, {
+                lastPrice: priceData.price,
+                previousClose: priceData.previousClose,
+                change: priceData.change,
+                pChange: priceData.changePercent
+            });
             
-            // Check for API limit
-            if (data.Note) {
-                addAPIDebugLog('⚠️ API limit reached (25/day). Using simulation.', 'error');
-                return false;
-            }
+            addAPIDebugLog(`📦 Parsed price data for ${symbol}:`, 'info');
+            addAPIDebugLog(JSON.stringify(priceData, null, 2), 'info');
             
-            // Check for error
-            if (data['Error Message']) {
-                addAPIDebugLog(`Error for ${symbol}: ${data['Error Message']}`, 'error');
-                continue;
-            }
-            
-            const quote = data['Global Quote'];
-            
-            if (quote && quote['05. price']) {
-                const newPrice = parseFloat(quote['05. price']);
-                const prevClose = parseFloat(quote['08. previous close']);
-                const change = parseFloat(quote['09. change']);
-                const changePercent = parseFloat(quote['10. change percent'].replace('%', ''));
-                
+            if (priceData && priceData.price && priceData.previousClose) {
                 if (marketData[symbol]) {
+                    // Compute change and % change from raw values to be safe
+                    const lastPrice = Number(priceData.price);
+                    const prevClose = Number(priceData.previousClose);
+                    const change = lastPrice - prevClose;
+                    const changePercent = prevClose !== 0 ? (change / prevClose) * 100 : 0;
+                    
+                    // Log computed vs API values for debugging
+                    adminLog(`📊 NSE COMPUTED for ${symbol}:`, {
+                        lastPrice,
+                        prevClose,
+                        apiChange: priceData.change,
+                        apiPChange: priceData.changePercent,
+                        computedChange: change,
+                        computedPChange: changePercent
+                    });
+                    
                     // Set real prices
-                    marketData[symbol].currentPrice = newPrice;
+                    marketData[symbol].currentPrice = lastPrice;
                     marketData[symbol].previousClose = prevClose;
                     marketData[symbol].change = change;
                     marketData[symbol].changePercent = changePercent;
-                    marketData[symbol].high = parseFloat(quote['03. high']) || newPrice;
-                    marketData[symbol].low = parseFloat(quote['04. low']) || newPrice;
+                    marketData[symbol].high = priceData.high || lastPrice;
+                    marketData[symbol].low = priceData.low || lastPrice;
                     
-                    // Store real sentiment (bullish or bearish)
+                    // Store real sentiment (bullish or bearish) based on computed %
                     marketData[symbol].realSentiment = changePercent > 0 ? 'bullish' : 'bearish';
-                    marketData[symbol].realMomentum = Math.abs(changePercent) / 5; // Normalize to 0-1
+                    marketData[symbol].realMomentum = Math.min(1, Math.abs(changePercent) / 5); // Normalize to 0-1
                     
                     pricesUpdated++;
-                    addAPIDebugLog(`${symbol}: ₹${newPrice.toFixed(2)} (${changePercent > 0 ? '+' : ''}${changePercent.toFixed(2)}%)`, 'success');
+                    
+                    const sign = changePercent > 0 ? '+' : '';
+                    addAPIDebugLog(
+                        `✅ ${symbol}: ₹${lastPrice.toFixed(2)} (${sign}${change.toFixed(2)}, ${sign}${changePercent.toFixed(2)}%)`,
+                        'success'
+                    );
+                } else {
+                    addAPIDebugLog(`⚠️ ${symbol} not found in marketData`, 'error');
                 }
             } else {
-                addAPIDebugLog(`No data for ${symbol}`, 'error');
-            }
-            
-            // Delay between requests (Alpha Vantage: 5 req/min = 12 sec between)
-            // Use shorter delay for faster initial load
-            if (i < symbols.length - 1) {
-                await new Promise(resolve => setTimeout(resolve, 2000)); // 2 seconds instead of 12
+                addAPIDebugLog(
+                    `❌ Invalid data for ${symbol} - price or previousClose missing. Raw: ${JSON.stringify(priceData)}`,
+                    'error'
+                );
             }
             
         } catch (error) {
-            addAPIDebugLog(`Error fetching ${symbol}: ${error.message}`, 'error');
+            addAPIDebugLog(`❌ Error fetching ${symbol}: ${error.message}`, 'error');
         }
     }
     
     if (pricesUpdated > 0) {
-        addAPIDebugLog(`✅ Updated ${pricesUpdated} stock prices from Alpha Vantage`, 'success');
+        addAPIDebugLog(`✅ Successfully updated ${pricesUpdated}/${symbols.length} stock prices from ${apiName}`, 'success');
         return true;
     } else {
-        addAPIDebugLog('❌ No prices updated - using simulation', 'error');
+        addAPIDebugLog(`❌ Failed to update any prices (0/${symbols.length}) - falling back to simulation`, 'error');
+        addAPIDebugLog('💡 Check: 1) Proxy server running, 2) Internet connection, 3) NSE response format', 'error');
         return false;
     }
 }
@@ -2620,10 +2745,30 @@ function renderAvailableDerivatives() {
         const item = document.createElement('div');
         item.className = 'available-item';
         
+        // Format expiry as MON YYYY
+        let expiryLabel = '';
+        if (derivative.expiry) {
+            const expDate = new Date(derivative.expiry);
+            const month = expDate.toLocaleString('en-IN', { month: 'short' }).toUpperCase();
+            const year = expDate.getFullYear();
+            expiryLabel = `${month} ${year}`;
+        }
+        
+        // Compose symbol line like in the derivatives watchlist
+        let symbolLine = '';
+        if (derivative.type === 'Call Option' || derivative.type === 'Put Option') {
+            const cp = derivative.type === 'Call Option' ? 'CE' : 'PE';
+            symbolLine = `${derivative.underlying} ${derivative.strike} ${cp}${expiryLabel ? ' ' + expiryLabel : ''}`;
+        } else if (derivative.type === 'Future') {
+            symbolLine = `${derivative.symbol} FUT${expiryLabel ? ' ' + expiryLabel : ''}`;
+        } else {
+            symbolLine = `${derivative.symbol} ${derivative.type || ''}`.trim();
+        }
+        
         item.innerHTML = `
             <div class="available-info">
                 <div class="stock-name">${derivative.name}</div>
-                <div class="stock-symbol">${derivative.symbol}</div>
+                <div class="stock-symbol">${symbolLine}</div>
             </div>
             <button class="btn-add-to-watchlist ${isInWatchlist ? 'added' : ''}" 
                     onclick="toggleWatchlist('derivatives', '${derivative.symbol}')"
